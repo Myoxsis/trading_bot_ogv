@@ -1,11 +1,13 @@
 #%%
 
 import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
 
 #%%
 
 CASH_ON_HAND = 1000
-global CASH_ON_HAND
 
 class Asset:
     def __init__(self, symbol : str, long_name : str) -> None:
@@ -46,22 +48,81 @@ class Order:
         self.price = np.random.randint(0, 5)
 
     def submit_order(self):
-        if CASH_ON_HAND > 0:
-            if self.price <= CASH_ON_HAND:
-                pos = Position(asset)
-                pos.update_quantity_and_unit_price(self.order_type, self.price)
-                CASH_ON_HAND -= self.price
-        else:
-            raise ValueError('No cash available')
+        pos = Position(self.asset)
+        pos.update_quantity_and_unit_price(self.order_type, self.quantity, self.price)
+        
+
+class Strategy:
+    def __init__(self, start_date, end_date, initial_cash, incrementation_step=1):
+        self.start_date = start_date
+        self.end_date = end_date
+        self.initial_cash = initial_cash
+
+    def initialize(self):
+        pass
+
+    def on_iteration(self):
+        pass
+
+    def run(self):
+        self.initialize()
+        for date in pd.date_range(self.start_date, self.end_date):
+            self.on_iteration()
 
 
 #%%
+
+CASH_ON_HAND = 1000
+
+
+for current
+
+alo_ord = Order(alo)
+alo_ord.create_order("buy", 2)
+alo_ord.submit_order()
+
+
+#%%
+
+# initialize
 
 alo = Asset("ALO.PA", "Alstom S.A.")
 
 alo_position = Position(alo)
 alo_position.display_position()
 
-alo_ord = Order(alo)
-alo_ord.create_order("buy", 2)
-alo_ord.submit_order()
+last_trade = None
+
+# On iteration
+
+date_l = []
+quote_l = []
+trade_l = []
+
+quote = 5
+for current_date in pd.date_range(datetime(2023, 10, 8), datetime(2023, 12, 5)):
+    quote = quote + (1 * (np.random.randint(-4, 4)/100) * (np.random.randint(2, 5)/10))
+    date_l.append(current_date)
+    quote_l.append(quote)
+    print(current_date, quote)
+
+    if last_trade == None:
+        if quote < 4.95:
+            alo_ord = Order(alo)
+            alo_ord.create_order("buy", 2)
+            alo_ord.submit_order()
+            last_trade = "buy"
+            trade_l.append(quote)
+        else:
+            trade_l.append(None)
+    else:
+        trade_l.append(None)
+
+plt.plot(date_l, quote_l)
+plt.scatter(date_l, trade_l)
+
+
+len(trade_l)
+len(date_l)
+
+alo_position.display_position()

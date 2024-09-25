@@ -100,23 +100,42 @@ quote_l = []
 trade_l = []
 
 quote = 5
+LAST_TRADE_VAL = 0
 for current_date in pd.date_range(datetime(2023, 10, 8), datetime(2023, 12, 5)):
-    quote = quote + (1 * (np.random.randint(-4, 4)/100) * (np.random.randint(2, 5)/10))
+    quote = quote + (1 * (np.random.randint(-4, 4)/100) * (np.random.randint(2, 5)/10) + pow((0.0005/10),6) ) 
     date_l.append(current_date)
     quote_l.append(quote)
+    last_trade_val = 0
+
     print(current_date, quote)
 
     if last_trade == None:
-        if quote < 4.95:
+        if quote < 4.98:
             alo_ord = Order(alo)
             alo_ord.create_order("buy", 2)
             alo_ord.submit_order()
             last_trade = "buy"
+            LAST_TRADE_VAL = quote
+            trade_l.append(quote)
+        else:
+            trade_l.append(None)
+    
+    elif last_trade == "buy":
+        print("Trade past : ", LAST_TRADE_VAL)
+        target_price = LAST_TRADE_VAL - (LAST_TRADE_VAL / 1000)
+        print("Target Price : ", target_price)
+        if quote <= target_price:
+            alo_ord = Order(alo)
+            alo_ord.create_order("sell", 2)
+            alo_ord.submit_order()
+            last_trade = "sell"
             trade_l.append(quote)
         else:
             trade_l.append(None)
     else:
         trade_l.append(None)
+
+
 
 plt.plot(date_l, quote_l)
 plt.scatter(date_l, trade_l)
@@ -126,3 +145,5 @@ len(trade_l)
 len(date_l)
 
 alo_position.display_position()
+
+print(trade_l)

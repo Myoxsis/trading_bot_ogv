@@ -4,6 +4,31 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import pandas as pd
+
+#%%
+
+def f_memoize_dt(s):
+    """
+    Memoization technique
+    """
+    dates = {date:datetime.strptime(date,'%Y-%m-%d') for date in s.unique()}
+    return s.map(dates)
+
+#%%
+
+df = pd.read_csv("../Stock_Portfolio_Management/data/quote/ALO.PA.csv")
+df = df.drop(columns=['Unnamed: 0'])
+
+df['Date'] = f_memoize_dt(df['Date'])
+
+#%%
+
+df.head()
+
+# %%
+
+df.info()
 
 #%%
 
@@ -95,7 +120,10 @@ cash_on_hand_l = []
 
 quote = 5
 
-for current_date in pd.date_range(datetime(2023, 10, 8), datetime(2023, 12, 5)):
+for current_date in pd.date_range(datetime(2024, 8, 8), datetime(2024, 9, 5)):
+    #print(current_date.strftime("%Y-%m-%d"))
+    #quote = df.loc[df['Date'] == current_date.strftime("%Y-%m-%d"), :]['Adj Close'].reset_index(drop=True)[0]#.values()[0]
+    #print(quote)
     quote = quote + (1 * (np.random.randint(-4, 4)/100) * (np.random.randint(2, 5)/10) + pow((0.0005/10),6) ) 
     date_l.append(current_date)
     quote_l.append(quote)

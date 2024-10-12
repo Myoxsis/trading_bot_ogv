@@ -1,6 +1,25 @@
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
+from datetime import datetime
+
+# utlis function
+def keep_first_signal(signal_list):
+    result = []
+    in_sequence = False  # A flag to track if we are in a sequence of ones
+    
+    for value in signal_list:
+        if value == 1:
+            if not in_sequence:
+                result.append(1)
+                in_sequence = True
+            else:
+                result.append(0)
+        else:
+            result.append(0)
+            in_sequence = False
+            
+    return result
 
 class DataLoader:
     def __init__(self, csv_file: str = None, data: pd.DataFrame = None, min_date : str = None, max_date : str = None):
@@ -84,15 +103,19 @@ class Strategy:
 
 
 class TradingStrategy:
-    def __init__(self, indicators: pd.DataFrame):
+    def __init__(self, strategy: Strategy):
         """
         Initialize the TradingStrategy class with indicators.
 
         Parameters:
         - indicators: A pandas DataFrame containing indicators calculated by the Strategy class.
         """
-        self.indicators = indicators
+        self.indicators = strategy.indicators
         self.trades = None
+        self.trading_instructions = pd.DataFrame({
+            "date": self.indicators.index,
+            "instruction" : 0
+        })
         self.rsi_high = 80
         self.rsi_low = 20
 
@@ -140,6 +163,137 @@ class TradingStrategy:
 
         self.trades = self.indicators
         return self.trades
+
+    def simulate_trades2(self, rsi_low: int = 20, rsi_high: int = 80) -> pd.DataFrame:
+        """
+        Simulate trades based on RSI and moving average signals and calculate performance metrics.
+
+        Parameters:
+        - rsi_low: RSI threshold for oversold (long entry).
+        - rsi_high: RSI threshold for overbought (short entry).
+        """
+        long_signal = []
+        short_signal = []
+        in_long_position = False
+        in_short_position = False
+
+        for i in range(len(self.indicators)):
+            rsi = self.indicators['RSI'].iloc[i]
+            short_ma = self.indicators['short_ma'].iloc[i]
+            medium_ma = self.indicators.get('medium_ma', self.indicators['short_ma']).iloc[i]
+
+            # Long Signal
+            if not in_long_position and rsi < rsi_low and short_ma > medium_ma:
+                long_signal.append(1)
+                short_signal.append(0)
+                in_long_position = True
+                in_short_position = False
+            # Short Signal
+            elif not in_short_position and rsi > rsi_high and short_ma < medium_ma:
+                short_signal.append(1)
+                long_signal.append(0)
+                in_short_position = True
+                in_long_position = False
+            else:
+                long_signal.append(0)
+                short_signal.append(0)
+
+        self.indicators['long_signal'] = long_signal
+        self.indicators['short_signal'] = short_signal
+
+        self.indicators = self.indicators.assign(
+            position=np.where(self.indicators['long_signal'] == 1, 1,
+                             np.where(self.indicators['short_signal'] == 1, -1, 0))
+        )
+        self.indicators['position'] = self.indicators['position'].shift().fillna(0)
+
+        # Calculate daily returns
+        self.indicators = self.indicators.assign(daily_return=self.indicators['Adj Close'].pct_change())
+        self.indicators = self.indicators.assign(strategy_return=self.indicators['daily_return'] * self.indicators['position'])
+
+        # Calculate cumulative returns
+        self.indicators = self.indicators.assign(cumulative_return=(1 + self.indicators['strategy_return']).cumprod())
+
+        self.trades = self.indicators
+        return self.trades
+
+    def simulate_trades3(self, rsi_low: int = 20, rsi_high: int = 80) -> pd.DataFrame:
+        """
+        Simulate trades based on RSI and moving average signals and calculate performance metrics.
+        Signals are generated only when the moving average crosses over or under another.
+        
+        Parameters:
+        - rsi_low: RSI threshold for oversold (long entry).
+        - rsi_high: RSI threshold for overbought (short entry).
+        """
+        #self.indicators['long_signal'] = 0
+        #self.indicators['short_signal'] = 0
+
+        if rsi_low is None:
+            rsi_low = self.rsi_low
+        else:
+            self.rsi_low = rsi_low
+
+        if rsi_high is None:
+            rsi_high = self.rsi_high
+        else:
+            self.rsi_high = rsi_high
+        
+        #for i in range(1, len(self.indicators)):
+            # Buy signal when RSI < rsi_low and short_ma crosses above medium_ma (if available)
+            #if (self.indicators['RSI'].iloc[i] < rsi_low #and 
+                #self.indicators['short_ma'].iloc[i] > self.indicators.get('medium_ma', self.indicators['short_ma']).iloc[i] and 
+                #self.indicators['short_ma'].iloc[i - 1] <= self.indicators.get('medium_ma', self.indicators['short_ma']).iloc[i - 1]
+            #    ):
+            #    self.indicators['long_signal'].iloc[i] = 1
+                
+        self.indicators = self.indicators.assign(
+            long_signal=keep_first_signal(np.where(self.indicators['RSI'] < rsi_low, 1, 0))
+        )
+
+            
+
+        # Sell signal when RSI > rsi_high and short_ma crosses below medium_ma (if available)
+        #if (self.indicators['RSI'].iloc[i] > rsi_high #and 
+            #self.indicators['short_ma'].iloc[i] < self.indicators.get('medium_ma', self.indicators['short_ma']).iloc[i] and 
+            #self.indicators['short_ma'].iloc[i - 1] >= self.indicators.get('medium_ma', self.indicators['short_ma']).iloc[i - 1]
+        #    ):
+            
+        #    self.indicators['short_signal'].iloc[i] = 1
+
+        self.indicators = self.indicators.assign(
+            short_signal=keep_first_signal(np.where(self.indicators['RSI'] > rsi_high, 1, 0))
+        )
+        
+        # Define position based on the signal
+        self.indicators = self.indicators.assign(
+            position=np.where(self.indicators['long_signal'] == 1, 1,
+                            np.where(self.indicators['short_signal'] == 1, -1, 0))
+        )
+        self.indicators['position'] = self.indicators['position'].shift().fillna(0)
+
+        # Calculate daily returns
+        self.indicators = self.indicators.assign(daily_return=self.indicators['Adj Close'].pct_change())
+        self.indicators = self.indicators.assign(strategy_return=self.indicators['daily_return'] * self.indicators['position'])
+
+        # Calculate cumulative returns
+        self.indicators = self.indicators.assign(cumulative_return=(1 + self.indicators['strategy_return']).cumprod())
+
+        self.trades = self.indicators
+        return self.trades
+    
+    def generate_trading_instructions(self):
+        self.trading_instructions = self.trading_instructions.assign(
+            date=np.where(self.indicators['short_signal'] == 1, self.indicators.index,
+                          np.where(self.indicators['long_signal'] == 1, self.indicators.index, np.datetime64('NaT')))
+        )
+        self.trading_instructions = self.trading_instructions.assign(
+            instruction=np.where(self.indicators['short_signal'] == 1, "Short position advised",
+                          np.where(self.indicators['long_signal'] == 1, "Long Position advised", 0))
+        )
+
+        return self.trading_instructions
+
 
     def get_trades(self) -> pd.DataFrame:
         """
@@ -232,6 +386,7 @@ class TradingStrategy:
         # Show both graphs
         fig1.show()
         fig2.show()
+        return fig1, fig2
 
 # Example usage
 data_loader = DataLoader(csv_file='./ALO.PA.csv', min_date="2023-01-05")
@@ -240,9 +395,70 @@ indicators = data_loader.get_data()
 strategy = Strategy(indicators)
 strategy.calculate_moving_averages()
 strategy.calculate_rsi()
-signals = strategy.get_indicators()
+#strategy.get_indicators()
 
-trading_strategy = TradingStrategy(signals)
-trading_strategy.simulate_trades(rsi_low=20, rsi_high=80)
-trading_strategy.plot_strategy()
+trading_strategy = TradingStrategy(strategy)
+trading_strategy.simulate_trades3(rsi_low=20, rsi_high=80)
+ti = trading_strategy.generate_trading_instructions()
+fig1, fig2 = trading_strategy.plot_strategy()
 trades = trading_strategy.get_trades()
+
+
+with open('Daily Update Report.html', 'w') as f:
+    f.write("""
+    <html>
+    <head>
+        <title>Daily Report Trades</title>
+    </head>
+    <body>
+        <div class="banner">
+            <h1 style="text-align: center;">Usage / Options report for stock movements</h1>
+            <h2 style="text-align: center;font-size:14px;color:grey;">Based on Portfolio and data maintained in DCA Follow Up program</h2>
+        </div>
+        <div class="last_update">Last Update : """)
+    f.write(str(datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
+    
+    f.write("""</div>
+            <div class="wrapper">
+	<div class="one">""")
+    f.write(fig1.to_html(full_html=False, default_height='50%', default_width='40%'))
+    f.write("""</div> <div class="two">""")
+    f.write(fig2.to_html(full_html=False, default_height='50%', default_width='40%'))
+
+    f.write("""
+    </div>
+    </div class="three">
+    <div>Trading Instruction</div></br>
+    <p>Please find below the latest trading instructions : 
+    """)
+    ti = ti[ti['date'].apply(lambda x :str(x)) != str('NaT')]
+    fig = go.Figure(data=[go.Table(
+        header=dict(values=list(ti.columns),
+                    fill_color='paleturquoise',
+                    align='left'),
+        cells=dict(values=ti.transpose().values.tolist(),
+                fill_color='lavender',
+                align='left'))
+    ])
+    f.write(fig.to_html(full_html=False, default_height='50%', default_width='30%'))
+
+ 
+
+    f.write("""
+    </p></div>
+    <style>
+    * {font-family : Arial;}
+    body {background-color: white;}
+    h1   {color: Black; font-size: 20px;}
+    p    {color: red;}
+    div.last_update {position : absolute; top:0; right:0;}
+	
+	.wrapper { display: grid; grid-template-columns: repeat(1, 1fr); grid-gap: 5px; grid-auto-rows: minmax(100px, auto);}	
+	.one { grid-column: 1 ; grid-row: 1/3; background-color: none;}
+    .three { grid-column: 3 ; grid-row: 1/3; background-color: none;}
+	.two { grid-column: 1 ; grid-row: 3/3; background-color: none;}
+    .two > div {right: 5;}   
+    
+             
+    </style></body>
+    </html>""")

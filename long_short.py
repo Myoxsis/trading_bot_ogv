@@ -1,7 +1,11 @@
 import pandas as pd
 import numpy as np
+import panel as pn
 import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 from datetime import datetime
+
+pn.extension('plotly')
 
 # utlis function
 def keep_first_signal(signal_list):
@@ -118,106 +122,9 @@ class TradingStrategy:
         })
         self.rsi_high = 80
         self.rsi_low = 20
+        self.dca_investments = None
 
-    def simulate_trades(self, rsi_low: int = None, rsi_high: int = None) -> pd.DataFrame:
-        """
-        Simulate trades based on RSI and moving average signals and calculate performance metrics.
-
-        Parameters:
-        - rsi_low: RSI threshold for oversold (long entry).
-        - rsi_high: RSI threshold for overbought (short entry).
-        """
-
-        if rsi_low is None:
-            rsi_low = self.rsi_low
-        else:
-            self.rsi_low = rsi_low
-
-        if rsi_high is None:
-            rsi_high = self.rsi_high
-        else:
-            self.rsi_high = rsi_high
-        
-
-        self.indicators = self.indicators.assign(
-            long_signal=np.where(
-                (self.indicators['RSI'] < rsi_low) & (self.indicators['short_ma'] > self.indicators.get('long_ma1', self.indicators['short_ma'])), 1, 0
-            ),
-            short_signal=np.where(
-                (self.indicators['RSI'] > rsi_high) & (self.indicators['short_ma'] < self.indicators.get('long_ma1', self.indicators['short_ma'])), 1, 0
-            )
-        )
-
-        self.indicators = self.indicators.assign(
-            position=np.where(self.indicators['long_signal'] == 1, 1,
-                             np.where(self.indicators['short_signal'] == 1, -1, 0))
-        )
-        self.indicators['position'] = self.indicators['position'].shift().fillna(0)
-
-        # Calculate daily returns
-        self.indicators = self.indicators.assign(daily_return=self.indicators['Adj Close'].pct_change())
-        self.indicators = self.indicators.assign(strategy_return=self.indicators['daily_return'] * self.indicators['position'])
-
-        # Calculate cumulative returns
-        self.indicators = self.indicators.assign(cumulative_return=(1 + self.indicators['strategy_return']).cumprod())
-
-        self.trades = self.indicators
-        return self.trades
-
-    def simulate_trades2(self, rsi_low: int = 20, rsi_high: int = 80) -> pd.DataFrame:
-        """
-        Simulate trades based on RSI and moving average signals and calculate performance metrics.
-
-        Parameters:
-        - rsi_low: RSI threshold for oversold (long entry).
-        - rsi_high: RSI threshold for overbought (short entry).
-        """
-        long_signal = []
-        short_signal = []
-        in_long_position = False
-        in_short_position = False
-
-        for i in range(len(self.indicators)):
-            rsi = self.indicators['RSI'].iloc[i]
-            short_ma = self.indicators['short_ma'].iloc[i]
-            medium_ma = self.indicators.get('medium_ma', self.indicators['short_ma']).iloc[i]
-
-            # Long Signal
-            if not in_long_position and rsi < rsi_low and short_ma > medium_ma:
-                long_signal.append(1)
-                short_signal.append(0)
-                in_long_position = True
-                in_short_position = False
-            # Short Signal
-            elif not in_short_position and rsi > rsi_high and short_ma < medium_ma:
-                short_signal.append(1)
-                long_signal.append(0)
-                in_short_position = True
-                in_long_position = False
-            else:
-                long_signal.append(0)
-                short_signal.append(0)
-
-        self.indicators['long_signal'] = long_signal
-        self.indicators['short_signal'] = short_signal
-
-        self.indicators = self.indicators.assign(
-            position=np.where(self.indicators['long_signal'] == 1, 1,
-                             np.where(self.indicators['short_signal'] == 1, -1, 0))
-        )
-        self.indicators['position'] = self.indicators['position'].shift().fillna(0)
-
-        # Calculate daily returns
-        self.indicators = self.indicators.assign(daily_return=self.indicators['Adj Close'].pct_change())
-        self.indicators = self.indicators.assign(strategy_return=self.indicators['daily_return'] * self.indicators['position'])
-
-        # Calculate cumulative returns
-        self.indicators = self.indicators.assign(cumulative_return=(1 + self.indicators['strategy_return']).cumprod())
-
-        self.trades = self.indicators
-        return self.trades
-
-    def simulate_trades3(self, rsi_low: int = 20, rsi_high: int = 80) -> pd.DataFrame:
+    def simulate_trades(self, rsi_low: int = 20, rsi_high: int = 80) -> pd.DataFrame:
         """
         Simulate trades based on RSI and moving average signals and calculate performance metrics.
         Signals are generated only when the moving average crosses over or under another.
@@ -294,7 +201,6 @@ class TradingStrategy:
 
         return self.trading_instructions
 
-
     def get_trades(self) -> pd.DataFrame:
         """
         Return the data with indicators.
@@ -353,6 +259,14 @@ class TradingStrategy:
                     line=dict(dash='dash')
                 ))
 
+        fig1.add_trace(go.Scatter(
+            x=self.indicators.index,
+            y=self.indicators['cumulative_return'],
+            mode='lines',
+            name='Cumulative Strategy Return',
+            line=dict(color='green', width=2, dash='dash')
+        ))
+
         fig1.update_layout(
             title='Trading Strategy Performance',
             xaxis_title='Date',
@@ -388,8 +302,306 @@ class TradingStrategy:
         fig2.show()
         return fig1, fig2
 
+    def simulate_dca(self, monthly_amount: float = 1000.0) -> pd.DataFrame:
+        """
+        Simulate a Dollar Cost Averaging (DCA) strategy where a fixed amount is invested every month.
+
+        Parameters:
+        - monthly_amount: The fixed amount to invest at the start of each month.
+        """
+        # Ensure the data is sorted by date
+        self.indicators = self.indicators.sort_index()
+
+        # Create columns to store the DCA positions and value over time
+        self.indicators['DCA_Units'] = 0.0
+        self.indicators['DCA_Total_Investment'] = 0.0
+        self.indicators['DCA_Portfolio_Value'] = 0.0
+
+        # Track total units purchased and total investment
+        total_units = 0.0
+        total_investment = 0.0
+
+        # Iterate over each row (each trading day)
+        for i in range(len(self.indicators)):
+            date = self.indicators.index[i]
+            price = self.indicators['Adj Close'].iloc[i]
+
+            # Check if it's the first trading day of the month
+            if i == 0 or date.month != self.indicators.index[i - 1].month:
+                # Calculate the units bought with the fixed amount
+                units_bought = monthly_amount / price
+                total_units += units_bought
+                total_investment += monthly_amount
+
+            # Update the columns with the current DCA stats
+            self.indicators.at[date, 'DCA_Units'] = total_units
+            self.indicators.at[date, 'DCA_Total_Investment'] = total_investment
+            self.indicators.at[date, 'DCA_Portfolio_Value'] = total_units * price
+
+        self.dca_investments = self.indicators
+        return self.dca_investments
+
+    def plot_dca_strategy(self):
+        """
+        Plot the DCA strategy performance using Plotly. It shows:
+        - Adjusted Close price over time.
+        - Portfolio value over time using the DCA strategy.
+        - Total investment over time using the DCA strategy.
+        """
+        if self.dca_investments is None:
+            raise ValueError("No DCA investments simulated. Run simulate_dca() first.")
+
+        fig = go.Figure()
+
+        # Plot adjusted close price
+        fig.add_trace(go.Scatter(
+            x=self.dca_investments.index, 
+            y=self.dca_investments['Adj Close'], 
+            mode='lines', 
+            name='Adjusted Close Price', 
+            line=dict(color='blue', width=2)
+        ))
+
+        # Plot total investment
+        fig.add_trace(go.Scatter(
+            x=self.dca_investments.index, 
+            y=self.dca_investments['DCA_Total_Investment'], 
+            mode='lines', 
+            name='Total Investment', 
+            line=dict(color='orange', width=2, dash='dash')
+        ))
+
+        # Plot DCA portfolio value
+        fig.add_trace(go.Scatter(
+            x=self.dca_investments.index, 
+            y=self.dca_investments['DCA_Portfolio_Value'], 
+            mode='lines', 
+            name='DCA Portfolio Value', 
+            line=dict(color='green', width=2)
+        ))
+
+        fig.update_layout(
+            title='DCA Strategy Performance',
+            xaxis_title='Date',
+            yaxis_title='Value (EUR)',
+            template='plotly_white'
+        )
+
+        fig.show()
+        return fig
+    
+    def plot_combined_strategy(self) -> go.Figure:
+        """
+        Create a combined plot for trading strategy performance, RSI levels, and DCA.
+
+        Returns:
+        - A Plotly figure object.
+        """
+        # Create a subplot grid for the combined figure
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=("Trading Strategy Performance", "RSI & Overbought/Oversold Levels", "DCA Strategy Performance"),
+            row_heights=[0.4, 0.3, 0.3]
+        )
+
+        # Trading strategy performance
+        fig.add_trace(go.Scatter(
+            x=self.indicators.index,
+            y=self.indicators['Adj Close'],
+            mode='lines',
+            name='Adjusted Close Price',
+            line=dict(color='blue', width=2)
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=self.indicators.index,
+            y=self.indicators['cumulative_return'],
+            mode='lines',
+            name='Cumulative Strategy Return',
+            line=dict(color='green', width=2, dash='dash')
+        ), row=1, col=1)
+
+        # RSI and Overbought/Oversold levels
+        fig.add_trace(go.Scatter(
+            x=self.indicators.index,
+            y=self.indicators['RSI'],
+            mode='lines',
+            name='RSI',
+            line=dict(color='purple', width=2)
+        ), row=2, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=self.indicators.index,
+            y=[80] * len(self.indicators),
+            mode='lines',
+            name='Overbought Level (80)',
+            line=dict(color='red', width=1, dash='dot')
+        ), row=2, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=self.indicators.index,
+            y=[20] * len(self.indicators),
+            mode='lines',
+            name='Oversold Level (20)',
+            line=dict(color='green', width=1, dash='dot')
+        ), row=2, col=1)
+
+        # DCA Strategy performance
+        if self.dca_investments is not None:
+            fig.add_trace(go.Scatter(
+                x=self.dca_investments.index,
+                y=self.dca_investments['DCA_Total_Investment'],
+                mode='lines',
+                name='Total Investment',
+                line=dict(color='orange', width=2, dash='dash')
+            ), row=3, col=1)
+
+            fig.add_trace(go.Scatter(
+                x=self.dca_investments.index,
+                y=self.dca_investments['DCA_Portfolio_Value'],
+                mode='lines',
+                name='DCA Portfolio Value',
+                line=dict(color='green', width=2)
+            ), row=3, col=1)
+
+        fig.update_layout(
+            height=1000,
+            title='Trading Strategy, RSI Levels, and DCA Performance',
+            xaxis_title='Date',
+            yaxis_title='Value (USD)',
+            template='plotly_white'
+        )
+
+        return fig
+
+    def create_table(self) -> go.Figure:
+        """
+        Create a table summarizing key indicators.
+
+        Returns:
+        - A Plotly figure object.
+        """
+        table_data = self.indicators[['Adj Close', 'RSI', 'cumulative_return']].tail(10)  # Last 10 rows for simplicity
+
+        fig = go.Figure(data=[go.Table(
+            header=dict(values=list(table_data.columns),
+                        fill_color='paleturquoise',
+                        align='left'),
+            cells=dict(values=[table_data[col] for col in table_data.columns],
+                       fill_color='lavender',
+                       align='left'))
+        ])
+
+        fig.update_layout(title="Summary Table of Indicators (Last 10 Rows)")
+        return fig
+
+    def save_html_report(self, filename: str = "trading_report.html"):
+        """
+        Save the combined graphs and table as an HTML file.
+
+        Parameters:
+        - filename: The name of the HTML file.
+        """
+        # Generate individual components
+        trad_fig, rsi_fig = self.plot_strategy()
+        dca_fig = self.plot_dca_strategy()
+        table_fig = self.create_table()
+
+        # Convert figures to HTML components
+        strategy_html = trad_fig.to_html(full_html=False, include_plotlyjs='cdn')
+        rsi_html = rsi_fig.to_html(full_html=False, include_plotlyjs=False)
+        table_html = table_fig.to_html(full_html=False, include_plotlyjs=False)
+        dca_html = dca_fig.to_html(full_html=False, include_plotlyjs=False)
+
+        # Assemble the HTML file
+        html_content = f"""
+        <html>
+        <head>
+            <title>Trading Strategy Report</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+            }}
+            .grid-container {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                grid-gap: 20px;
+                margin: 20px;
+            }}
+            .grid-item {{
+                border: 1px solid #ddd;
+                padding: 10px;
+                background-color: #f9f9f9;
+            }}
+            h1 {{
+                text-align: center;
+            }}
+            .plotly-graph-div {{
+                width: 100%;
+                height: 100%;
+            }}
+        </style>
+        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    </head>
+    <body>
+        <h1>Trading Strategy Report</h1>
+        <div class="grid-container">
+            <div class="grid-item">
+                <h2>Trading Strategy Performance</h2>
+                <div>{strategy_html}</div>
+            </div>
+            <div class="grid-item">
+                <h2>RSI and Overbought/Oversold Levels</h2>
+                <div>{rsi_html}</div>
+            </div>
+            <div class="grid-item">
+                <h2>DCA Strategy Performance</h2>
+                <div>{dca_html}</div>
+            </div>
+            <div class="grid-item">
+                <h2>Indicators Summary Table</h2>
+                <div>{table_html}</div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+        # Write the HTML content to the file
+        with open(filename, "w") as f:
+            f.write(html_content)
+    
+    def display_report(self):
+        # Create individual components
+        trading_fig, rsi_fig = self.plot_strategy()
+        dca_fig = self.plot_dca_strategy()
+        table_pane = self.create_table()
+
+        # Convert Plotly figures to Panel objects
+        trading_panel = pn.pane.Plotly(trading_fig, sizing_mode='stretch_both')
+        rsi_panel = pn.pane.Plotly(rsi_fig, sizing_mode='stretch_both')
+        dca_panel = pn.pane.Plotly(dca_fig, sizing_mode='stretch_both')
+
+        # Arrange components in a 2x2 grid
+        grid = pn.GridSpec(sizing_mode='stretch_both', max_height=800)
+        grid[0, 0] = trading_panel
+        grid[0, 1] = rsi_panel
+        grid[1, 0] = dca_panel
+        grid[1, 1] = table_pane
+
+        # Display the grid layout
+        dashboard = pn.Column(
+            pn.pane.Markdown("# Trading Strategy Report"),
+            grid,
+            sizing_mode='stretch_both'
+        )
+        
+        dashboard.show()
+
 # Example usage
-data_loader = DataLoader(csv_file='./ALO.PA.csv', min_date="2023-01-05")
+data_loader = DataLoader(csv_file='./ALO.PA.csv', min_date="2023-11-01")
 indicators = data_loader.get_data()
 
 strategy = Strategy(indicators)
@@ -398,67 +610,12 @@ strategy.calculate_rsi()
 #strategy.get_indicators()
 
 trading_strategy = TradingStrategy(strategy)
-trading_strategy.simulate_trades3(rsi_low=20, rsi_high=80)
+trading_strategy.simulate_trades(rsi_low=20, rsi_high=80)
 ti = trading_strategy.generate_trading_instructions()
-fig1, fig2 = trading_strategy.plot_strategy()
+trading_strategy.simulate_dca(50)
+#fig3 = trading_strategy.plot_dca_strategy()
+#fig1, fig2 = trading_strategy.plot_strategy()
 trades = trading_strategy.get_trades()
 
-
-with open('Daily Update Report.html', 'w') as f:
-    f.write("""
-    <html>
-    <head>
-        <title>Daily Report Trades</title>
-    </head>
-    <body>
-        <div class="banner">
-            <h1 style="text-align: center;">Usage / Options report for stock movements</h1>
-            <h2 style="text-align: center;font-size:14px;color:grey;">Based on Portfolio and data maintained in DCA Follow Up program</h2>
-        </div>
-        <div class="last_update">Last Update : """)
-    f.write(str(datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
-    
-    f.write("""</div>
-            <div class="wrapper">
-	<div class="one">""")
-    f.write(fig1.to_html(full_html=False, default_height='50%', default_width='40%'))
-    f.write("""</div> <div class="two">""")
-    f.write(fig2.to_html(full_html=False, default_height='50%', default_width='40%'))
-
-    f.write("""
-    </div>
-    </div class="three">
-    <div>Trading Instruction</div></br>
-    <p>Please find below the latest trading instructions : 
-    """)
-    ti = ti[ti['date'].apply(lambda x :str(x)) != str('NaT')]
-    fig = go.Figure(data=[go.Table(
-        header=dict(values=list(ti.columns),
-                    fill_color='paleturquoise',
-                    align='left'),
-        cells=dict(values=ti.transpose().values.tolist(),
-                fill_color='lavender',
-                align='left'))
-    ])
-    f.write(fig.to_html(full_html=False, default_height='50%', default_width='30%'))
-
- 
-
-    f.write("""
-    </p></div>
-    <style>
-    * {font-family : Arial;}
-    body {background-color: white;}
-    h1   {color: Black; font-size: 20px;}
-    p    {color: red;}
-    div.last_update {position : absolute; top:0; right:0;}
-	
-	.wrapper { display: grid; grid-template-columns: repeat(1, 1fr); grid-gap: 5px; grid-auto-rows: minmax(100px, auto);}	
-	.one { grid-column: 1 ; grid-row: 1/3; background-color: none;}
-    .three { grid-column: 3 ; grid-row: 1/3; background-color: none;}
-	.two { grid-column: 1 ; grid-row: 3/3; background-color: none;}
-    .two > div {right: 5;}   
-    
-             
-    </style></body>
-    </html>""")
+trading_strategy.save_html_report()
+trading_strategy.display_report()
